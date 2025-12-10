@@ -173,7 +173,7 @@ export const OPTIONS: OptionDescriptions<Required<NativeParsedArgs>> = {
 	'transient': { type: 'boolean', cat: 't', description: localize('transient', "Run with temporary data and extension directories, as if launched for the first time.") },
 	'use-inmemory-secretstorage': { type: 'boolean', deprecates: ['disable-keytar'] },
 	'password-store': { type: 'string' },
-	'disable-workspace-trust': { type: 'boolean' },
+	'disable-workspace-trust': { type: 'boolean', description: localize('disable-workspace-trust', "Disable workspace trust prompts, automatically trusting all workspaces.") },
 	'disable-crash-reporter': { type: 'boolean' },
 	'crash-reporter-directory': { type: 'string' },
 	'crash-reporter-id': { type: 'string' },
