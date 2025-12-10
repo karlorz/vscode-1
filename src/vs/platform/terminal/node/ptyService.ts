@@ -20,6 +20,7 @@ import type { Unicode11Addon as XtermUnicode11Addon } from '@xterm/addon-unicode
 import { IGetTerminalLayoutInfoArgs, IProcessDetails, ISetTerminalLayoutInfoArgs, ITerminalTabLayoutInfoDto } from '../common/terminalProcess.js';
 import { getWindowsBuildNumber } from './terminalEnvironment.js';
 import { TerminalProcess } from './terminalProcess.js';
+import { CmuxTerminalProcess, isCmuxEnabled } from './cmuxTerminalProcess.js';
 import { localize } from '../../../nls.js';
 import { ignoreProcessNames } from './childProcessMonitor.js';
 import { ErrorNoTelemetry } from '../../../base/common/errors.js';
@@ -314,7 +315,12 @@ export class PtyService extends Disposable implements IPtyService {
 			throw new Error('Attempt to create a process when attach object was provided');
 		}
 		const id = ++this._lastPtyId;
-		const process = new TerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService, this._productService);
+
+		// Use cmux backend if CMUX_XTERM_URL is set
+		const process = isCmuxEnabled()
+			? new CmuxTerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService)
+			: new TerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService, this._productService);
+
 		const processLaunchOptions: IPersistentTerminalProcessLaunchConfig = {
 			env,
 			executableEnv,
