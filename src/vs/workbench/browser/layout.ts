@@ -2860,9 +2860,8 @@ class LayoutStateModel extends Disposable {
 		LayoutStateKeys.SIDEBAR_HIDDEN.defaultValue = workbenchState === WorkbenchState.EMPTY;
 		LayoutStateKeys.AUXILIARYBAR_SIZE.defaultValue = Math.min(300, mainContainerDimension.width / 4);
 		LayoutStateKeys.AUXILIARYBAR_HIDDEN.defaultValue = (() => {
-			if (isWeb && !this.environmentService.remoteAuthority) {
-				return true; // not required in web if unsupported
-			}
+			// Note: Removed the isWeb check that forced auxiliary bar to be hidden in web mode.
+			// This allows workbench.secondarySideBar.defaultVisibility to work in code serve-web.
 
 			const configuration = this.configurationService.inspect(WorkbenchLayoutSettings.AUXILIARYBAR_DEFAULT_VISIBILITY);
 
