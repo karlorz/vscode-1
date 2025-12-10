@@ -318,7 +318,7 @@ export class PtyService extends Disposable implements IPtyService {
 
 		// Use cmux backend if CMUX_XTERM_URL is set
 		const process = isCmuxEnabled()
-			? new CmuxTerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService)
+			? new CmuxTerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService) as unknown as TerminalProcess
 			: new TerminalProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, options, this._logService, this._productService);
 
 		const processLaunchOptions: IPersistentTerminalProcessLaunchConfig = {

@@ -9,7 +9,8 @@ import { ILogService } from '../../log/common/log.js';
 import { FlowControlConstants, IProcessProperty, IProcessPropertyMap, IProcessReadyEvent, IShellLaunchConfig, ITerminalChildProcess, ITerminalLaunchError, ITerminalLaunchResult, ITerminalProcessOptions, ProcessPropertyType, TerminalShellType } from '../common/terminal.js';
 import * as http from 'http';
 import * as https from 'https';
-import WebSocket from 'ws';
+import * as crypto from 'crypto';
+import { Socket } from 'net';
 
 /**
  * CmuxTerminalProcess connects to a cmux-xterm server instead of spawning
@@ -41,7 +42,7 @@ export class CmuxTerminalProcess extends Disposable implements ITerminalChildPro
 	};
 
 	private _cmuxSessionId: string | undefined;
-	private _ws: WebSocket | undefined;
+	private _socket: Socket | undefined;
 	private _exitCode: number | undefined;
 	private readonly _initialCwd: string;
 	private readonly _cmuxUrl: string;
@@ -70,7 +71,7 @@ export class CmuxTerminalProcess extends Disposable implements ITerminalChildPro
 		private _rows: number,
 		_env: Record<string, string | undefined>,
 		_executableEnv: Record<string, string | undefined>,
-		private readonly _options: ITerminalProcessOptions,
+		_options: ITerminalProcessOptions,
 		@ILogService private readonly _logService: ILogService,
 		cmuxUrl?: string,
 		existingSessionId?: string
@@ -83,7 +84,7 @@ export class CmuxTerminalProcess extends Disposable implements ITerminalChildPro
 		this._properties[ProcessPropertyType.Cwd] = this._initialCwd;
 
 		this._register(toDisposable(() => {
-			this._closeWebSocket();
+			this._closeSocket();
 		}));
 	}
 
@@ -172,50 +173,167 @@ export class CmuxTerminalProcess extends Disposable implements ITerminalChildPro
 			throw new Error('No session ID');
 		}
 
-		const wsUrl = this._cmuxUrl.replace(/^http/, 'ws') + `/ws/${this._cmuxSessionId}`;
-		this._logService.trace('CmuxTerminalProcess: Connecting WebSocket', wsUrl);
+		const url = new URL(`/ws/${this._cmuxSessionId}`, this._cmuxUrl);
+		const isSecure = url.protocol === 'https:';
+		const port = url.port || (isSecure ? '443' : '80');
+		const key = crypto.randomBytes(16).toString('base64');
+
+		this._logService.trace('CmuxTerminalProcess: Connecting WebSocket', url.toString());
 
 		return new Promise((resolve, reject) => {
-			this._ws = new WebSocket(wsUrl);
+			const options = {
+				host: url.hostname,
+				port: parseInt(port, 10),
+				path: url.pathname,
+				headers: {
+					'Connection': 'Upgrade',
+					'Upgrade': 'websocket',
+					'Sec-WebSocket-Key': key,
+					'Sec-WebSocket-Version': '13'
+				}
+			};
 
-			this._ws.on('open', () => {
-				this._logService.trace('CmuxTerminalProcess: WebSocket connected');
+			const req = (isSecure ? https : http).request(options);
+
+			req.on('upgrade', (res, socket) => {
+				this._socket = socket;
+
+				socket.on('data', (data: Buffer) => {
+					// Parse WebSocket frames
+					const frames = this._parseWebSocketFrames(data);
+					for (const frame of frames) {
+						if (frame.opcode === 0x01 || frame.opcode === 0x02) { // Text or Binary
+							const text = frame.payload.toString('utf-8');
+
+							// Handle flow control
+							this._unacknowledgedCharCount += text.length;
+							if (!this._isPtyPaused && this._unacknowledgedCharCount > FlowControlConstants.HighWatermarkChars) {
+								this._logService.trace(`CmuxTerminalProcess: Flow control pause`);
+								this._isPtyPaused = true;
+							}
+
+							this._onProcessData.fire(text);
+						} else if (frame.opcode === 0x08) { // Close
+							this._exitCode = 0;
+							this._onProcessExit.fire(this._exitCode);
+						}
+					}
+				});
+
+				socket.on('close', () => {
+					this._logService.trace('CmuxTerminalProcess: Socket closed');
+					this._exitCode = this._exitCode ?? 0;
+					this._onProcessExit.fire(this._exitCode);
+				});
+
+				socket.on('error', (err) => {
+					this._logService.error('CmuxTerminalProcess: Socket error', err);
+				});
+
 				resolve();
 			});
 
-			this._ws.on('message', (data: Buffer | string) => {
-				const text = typeof data === 'string' ? data : data.toString('utf-8');
-
-				// Handle flow control
-				this._unacknowledgedCharCount += text.length;
-				if (!this._isPtyPaused && this._unacknowledgedCharCount > FlowControlConstants.HighWatermarkChars) {
-					this._logService.trace(`CmuxTerminalProcess: Flow control pause (${this._unacknowledgedCharCount} > ${FlowControlConstants.HighWatermarkChars})`);
-					this._isPtyPaused = true;
-					// Note: cmux doesn't support pause/resume yet, so this is informational only
-				}
-
-				this._onProcessData.fire(text);
-			});
-
-			this._ws.on('close', (code, reason) => {
-				this._logService.trace('CmuxTerminalProcess: WebSocket closed', code, reason.toString());
-				this._exitCode = code === 1000 ? 0 : 1;
-				this._onProcessExit.fire(this._exitCode);
-			});
-
-			this._ws.on('error', (err) => {
-				this._logService.error('CmuxTerminalProcess: WebSocket error', err);
-				if (this._ws?.readyState !== WebSocket.OPEN) {
-					reject(err);
-				}
-			});
+			req.on('error', reject);
+			req.end();
 		});
 	}
 
-	private _closeWebSocket(): void {
-		if (this._ws) {
-			this._ws.close();
-			this._ws = undefined;
+	private _parseWebSocketFrames(data: Buffer): Array<{ opcode: number; payload: Buffer }> {
+		const frames: Array<{ opcode: number; payload: Buffer }> = [];
+		let offset = 0;
+
+		while (offset < data.length) {
+			if (offset + 2 > data.length) {
+				break;
+			}
+
+			const byte1 = data[offset];
+			const byte2 = data[offset + 1];
+			const opcode = byte1 & 0x0F;
+			const masked = (byte2 & 0x80) !== 0;
+			let payloadLength = byte2 & 0x7F;
+			offset += 2;
+
+			if (payloadLength === 126) {
+				if (offset + 2 > data.length) {
+					break;
+				}
+				payloadLength = data.readUInt16BE(offset);
+				offset += 2;
+			} else if (payloadLength === 127) {
+				if (offset + 8 > data.length) {
+					break;
+				}
+				payloadLength = Number(data.readBigUInt64BE(offset));
+				offset += 8;
+			}
+
+			let maskKey: Buffer | undefined;
+			if (masked) {
+				if (offset + 4 > data.length) {
+					break;
+				}
+				maskKey = data.subarray(offset, offset + 4);
+				offset += 4;
+			}
+
+			if (offset + payloadLength > data.length) {
+				break;
+			}
+			let payload = data.subarray(offset, offset + payloadLength);
+			offset += payloadLength;
+
+			if (maskKey) {
+				payload = Buffer.from(payload);
+				for (let i = 0; i < payload.length; i++) {
+					payload[i] ^= maskKey[i % 4];
+				}
+			}
+
+			frames.push({ opcode, payload });
+		}
+
+		return frames;
+	}
+
+	private _createWebSocketFrame(data: string | Buffer): Buffer {
+		const payload = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
+		const opcode = typeof data === 'string' ? 0x01 : 0x02; // Text or Binary
+
+		// Client frames MUST be masked
+		const mask = crypto.randomBytes(4);
+		const maskedPayload = Buffer.from(payload);
+		for (let i = 0; i < maskedPayload.length; i++) {
+			maskedPayload[i] ^= mask[i % 4];
+		}
+
+		let header: Buffer;
+		if (payload.length < 126) {
+			header = Buffer.alloc(6);
+			header[0] = 0x80 | opcode; // FIN + opcode
+			header[1] = 0x80 | payload.length; // Masked + length
+			mask.copy(header, 2);
+		} else if (payload.length < 65536) {
+			header = Buffer.alloc(8);
+			header[0] = 0x80 | opcode;
+			header[1] = 0x80 | 126;
+			header.writeUInt16BE(payload.length, 2);
+			mask.copy(header, 4);
+		} else {
+			header = Buffer.alloc(14);
+			header[0] = 0x80 | opcode;
+			header[1] = 0x80 | 127;
+			header.writeBigUInt64BE(BigInt(payload.length), 2);
+			mask.copy(header, 10);
+		}
+
+		return Buffer.concat([header, maskedPayload]);
+	}
+
+	private _closeSocket(): void {
+		if (this._socket) {
+			this._socket.destroy();
+			this._socket = undefined;
 		}
 	}
 
@@ -229,7 +347,7 @@ export class CmuxTerminalProcess extends Disposable implements ITerminalChildPro
 			});
 		}
 
-		this._closeWebSocket();
+		this._closeSocket();
 		this._onProcessExit.fire(this._exitCode || 0);
 		this.dispose();
 	}
@@ -261,11 +379,12 @@ export class CmuxTerminalProcess extends Disposable implements ITerminalChildPro
 	}
 
 	input(data: string, _isBinary: boolean = false): void {
-		if (this._store.isDisposed || !this._ws || this._ws.readyState !== WebSocket.OPEN) {
+		if (this._store.isDisposed || !this._socket || this._socket.destroyed) {
 			return;
 		}
 		this._logService.trace('CmuxTerminalProcess: input', data.length, 'chars');
-		this._ws.send(data);
+		const frame = this._createWebSocketFrame(data);
+		this._socket.write(frame);
 	}
 
 	sendSignal(signal: string): void {
@@ -301,20 +420,21 @@ export class CmuxTerminalProcess extends Disposable implements ITerminalChildPro
 	}
 
 	resize(cols: number, rows: number): void {
-		if (this._store.isDisposed || !this._ws || this._ws.readyState !== WebSocket.OPEN) {
+		if (this._store.isDisposed || !this._socket || this._socket.destroyed) {
 			return;
 		}
 		this._cols = cols;
 		this._rows = rows;
 		this._logService.trace('CmuxTerminalProcess: resize', cols, rows);
 
-		// Send resize control message
+		// Send resize control message as JSON text frame
 		const controlMsg = JSON.stringify({
 			type: 'resize',
 			cols,
 			rows
 		});
-		this._ws.send(controlMsg);
+		const frame = this._createWebSocketFrame(controlMsg);
+		this._socket.write(frame);
 	}
 
 	clearBuffer(): void {
@@ -324,7 +444,7 @@ export class CmuxTerminalProcess extends Disposable implements ITerminalChildPro
 
 	acknowledgeDataEvent(charCount: number): void {
 		this._unacknowledgedCharCount = Math.max(this._unacknowledgedCharCount - charCount, 0);
-		this._logService.trace(`CmuxTerminalProcess: Flow control ack ${charCount} chars (unacknowledged: ${this._unacknowledgedCharCount})`);
+		this._logService.trace(`CmuxTerminalProcess: Flow control ack ${charCount} chars`);
 		if (this._isPtyPaused && this._unacknowledgedCharCount < FlowControlConstants.LowWatermarkChars) {
 			this._logService.trace(`CmuxTerminalProcess: Flow control resume`);
 			this._isPtyPaused = false;

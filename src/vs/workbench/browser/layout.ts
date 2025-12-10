@@ -2791,7 +2791,7 @@ class LayoutStateModel extends Disposable {
 		private readonly storageService: IStorageService,
 		private readonly configurationService: IConfigurationService,
 		private readonly contextService: IWorkspaceContextService,
-		private readonly environmentService: IBrowserWorkbenchEnvironmentService,
+		_environmentService: IBrowserWorkbenchEnvironmentService,
 	) {
 		super();
 
