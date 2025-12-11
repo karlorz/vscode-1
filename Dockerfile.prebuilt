@@ -1,0 +1,85 @@
+# VSCode Server Web - Pre-built Artifact Dockerfile
+#
+# This Dockerfile uses a pre-built artifact from GitHub releases
+# for faster image builds without compiling from source.
+#
+# Usage:
+#   # Using latest release
+#   docker build -f Dockerfile.prebuilt -t vscode-web .
+#
+#   # Using specific version
+#   docker build -f Dockerfile.prebuilt -t vscode-web \
+#     --build-arg VERSION=v1.0.0 .
+#
+#   # Using specific artifact URL
+#   docker build -f Dockerfile.prebuilt -t vscode-web \
+#     --build-arg ARTIFACT_URL=https://example.com/vscode-server.tar.gz .
+
+FROM debian:bookworm-slim
+
+# Build arguments
+ARG TARGETARCH=amd64
+ARG VERSION=latest
+ARG ARTIFACT_URL=""
+ARG GITHUB_REPO=manaflow-ai/vscode-1
+
+# Install runtime dependencies and curl for downloading
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    libsecret-1-0 \
+    libkrb5-3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -s /bin/bash vscode
+
+# Download and extract VSCode server
+WORKDIR /opt
+RUN set -ex; \
+    # Map Docker arch to VSCode arch naming
+    case "${TARGETARCH}" in \
+        amd64) VSCODE_ARCH=x64 ;; \
+        arm64) VSCODE_ARCH=arm64 ;; \
+        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac; \
+    \
+    # Determine download URL
+    if [ -n "${ARTIFACT_URL}" ]; then \
+        DOWNLOAD_URL="${ARTIFACT_URL}"; \
+    elif [ "${VERSION}" = "latest" ]; then \
+        DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/vscode-server-linux-${VSCODE_ARCH}-web.tar.gz"; \
+    else \
+        DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}/vscode-server-linux-${VSCODE_ARCH}-web.tar.gz"; \
+    fi; \
+    \
+    echo "Downloading from: ${DOWNLOAD_URL}"; \
+    curl -fsSL "${DOWNLOAD_URL}" -o /tmp/vscode-server.tar.gz; \
+    tar -xzf /tmp/vscode-server.tar.gz; \
+    rm /tmp/vscode-server.tar.gz; \
+    mv vscode-server-linux-*-web vscode-server; \
+    chown -R vscode:vscode /opt/vscode-server
+
+# Set working directory
+WORKDIR /home/vscode
+
+# Switch to non-root user
+USER vscode
+
+# Expose the default port
+EXPOSE 8080
+
+# Default workspace directory
+VOLUME ["/home/vscode/workspace"]
+
+# Environment variables
+ENV VSCODE_SERVER_PORT=8080
+ENV VSCODE_SERVER_HOST=0.0.0.0
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${VSCODE_SERVER_PORT}/ || exit 1
+
+# Entry point
+ENTRYPOINT ["/opt/vscode-server/bin/code-server-oss"]
+CMD ["--host", "0.0.0.0", "--port", "8080", "--without-connection-token", "/home/vscode/workspace"]
