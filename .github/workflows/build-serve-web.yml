@@ -67,14 +67,9 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compile
-        run: npm run compile
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build server (web)
         run: |
-          npm run gulp vscode-reh-web-linux-${{ matrix.arch }}-min-ci
+          npm run gulp vscode-reh-web-linux-${{ matrix.arch }}-min
           mv ../vscode-reh-web-linux-${{ matrix.arch }} ../vscode-server-linux-${{ matrix.arch }}-web
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
