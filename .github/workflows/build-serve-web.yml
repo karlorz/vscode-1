@@ -67,14 +67,31 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build server (web)
-        run: |
-          # Build without minification to avoid OOM on GitHub runners
-          npm run gulp vscode-reh-web-linux-${{ matrix.arch }}
-          mv ../vscode-reh-web-linux-${{ matrix.arch }} ../vscode-server-linux-${{ matrix.arch }}-web
+      - name: Compile (without mangling to save memory)
+        run: npm run gulp compile-build-without-mangling
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Compile extensions
+        run: |
+          npm run gulp clean-extensions-build
+          npm run gulp compile-extensions-build
+          npm run gulp compile-extension-media-build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bundle
+        run: npm run gulp bundle-vscode-reh-web-linux-${{ matrix.arch }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build server (web)
+        run: |
+          npm run gulp vscode-reh-web-linux-${{ matrix.arch }}-ci
+          mv ../vscode-reh-web-linux-${{ matrix.arch }} ../vscode-server-linux-${{ matrix.arch }}-web
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create archive
         run: |
