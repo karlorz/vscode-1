@@ -1,0 +1,40 @@
+Set default workbench settings for web mode
+
+Configures the web workbench to start without a welcome page and with
+the secondary sidebar hidden by default. Also supports ?theme= query
+parameter to set the color theme.
+
+Index: vscode/src/vs/server/node/webClientServer.ts
+===================================================================
+--- vscode.orig/src/vs/server/node/webClientServer.ts
++++ vscode/src/vs/server/node/webClientServer.ts
+@@ -357,6 +357,19 @@ export class WebClientServer {
+ 			} catch (err) {/* Ignore Error */ }
+ 		}
+
++		// Parse query parameters for configuration overrides
++		const queryTheme = typeof parsedUrl.query.theme === 'string' ? parsedUrl.query.theme : undefined;
++
++		const configurationDefaults: Record<string, unknown> = {
++			'workbench.startupEditor': 'none',
++			'workbench.secondarySideBar.defaultVisibility': 'hidden'
++		};
++
++		// Apply theme from query param if provided
++		if (queryTheme) {
++			configurationDefaults['workbench.colorTheme'] = queryTheme;
++		}
++
+ 		const workbenchWebConfiguration = {
+ 			remoteAuthority,
+ 			serverBasePath: basePath,
+@@ -367,7 +380,8 @@ export class WebClientServer {
+ 			folderUri: resolveWorkspaceURI(this._environmentService.args['default-folder']),
+ 			workspaceUri: resolveWorkspaceURI(this._environmentService.args['default-workspace']),
+ 			productConfiguration,
+-			callbackRoute: callbackRoute
++			callbackRoute: callbackRoute,
++			configurationDefaults
+ 		};
+
+ 		const cookies = cookie.parse(req.headers.cookie || '');
