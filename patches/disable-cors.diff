@@ -1,0 +1,231 @@
+Patch: disable-cors
+
+Disable CORS restrictions and enable iframe embedding for VSCode serve-web.
+
+This patch:
+- Adds getCorsHeaders() helper function returning permissive CORS headers
+- Handles OPTIONS preflight requests with 200 + CORS headers
+- Adds CORS headers to all HTTP responses (errors, files, redirects, HTML)
+- Removes origin restriction on /vscode-remote-resource endpoint
+- Removes unused WebEndpointOriginChecker class and related imports
+
+diff --git a/src/vs/server/node/remoteExtensionHostAgentServer.ts b/src/vs/server/node/remoteExtensionHostAgentServer.ts
+--- a/src/vs/server/node/remoteExtensionHostAgentServer.ts
++++ b/src/vs/server/node/remoteExtensionHostAgentServer.ts
+@@ -18,7 +18,6 @@ import { connectionTokenQueryName, FileAccess, getServerProductSegment, Schemas
+ import { dirname, join } from '../../base/common/path.js';
+ import * as perf from '../../base/common/performance.js';
+ import * as platform from '../../base/common/platform.js';
+-import { createRegExp, escapeRegExpCharacters } from '../../base/common/strings.js';
+ import { URI } from '../../base/common/uri.js';
+ import { generateUuid } from '../../base/common/uuid.js';
+ import { getOSReleaseInfo } from '../../base/node/osReleaseInfo.js';
+@@ -38,7 +37,7 @@ import { ManagementConnection } from './remoteExtensionManagement.js';
+ import { determineServerConnectionToken, requestHasValidConnectionToken as httpRequestHasValidConnectionToken, ServerConnectionToken, ServerConnectionTokenParseError, ServerConnectionTokenType } from './serverConnectionToken.js';
+ import { IServerEnvironmentService, ServerParsedArgs } from './serverEnvironmentService.js';
+ import { setupServerServices, SocketServer } from './serverServices.js';
+-import { CacheControl, serveError, serveFile, WebClientServer } from './webClientServer.js';
++import { CacheControl, getCorsHeaders, serveError, serveFile, WebClientServer } from './webClientServer.js';
+ const require = createRequire(import.meta.url);
+ 
+ const SHUTDOWN_TIMEOUT = 5 * 60 * 1000;
+@@ -63,7 +62,6 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
+ 	private readonly _managementConnections: { [reconnectionToken: string]: ManagementConnection };
+ 	private readonly _allReconnectionTokens: Set<string>;
+ 	private readonly _webClientServer: WebClientServer | null;
+-	private readonly _webEndpointOriginChecker: WebEndpointOriginChecker;
+ 	private readonly _reconnectionGraceTime: number;
+ 
+ 	private readonly _serverBasePath: string | undefined;
+@@ -83,7 +81,6 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
+ 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+ 	) {
+ 		super();
+-		this._webEndpointOriginChecker = WebEndpointOriginChecker.create(this._productService);
+ 
+ 		if (serverBasePath !== undefined && serverBasePath.charCodeAt(serverBasePath.length - 1) === CharCode.Slash) {
+ 			// Remove trailing slash from base path
+@@ -106,6 +103,12 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
+ 	}
+ 
+ 	public async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
++		// Handle CORS preflight requests
++		if (req.method === 'OPTIONS') {
++			res.writeHead(200, getCorsHeaders());
++			return void res.end();
++		}
++
+ 		// Only serve GET requests
+ 		if (req.method !== 'GET') {
+ 			return serveError(req, res, 405, \`Unsupported method \${req.method}\`);
+@@ -133,14 +136,14 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
+ 
+ 		// Version
+ 		if (pathname === '/version') {
+-			res.writeHead(200, { 'Content-Type': 'text/plain' });
++			res.writeHead(200, { 'Content-Type': 'text/plain', ...getCorsHeaders() });
+ 			return void res.end(this._productService.commit || '');
+ 		}
+ 
+ 		// Delay shutdown
+ 		if (pathname === '/delay-shutdown') {
+ 			this._delayShutdown();
+-			res.writeHead(200);
++			res.writeHead(200, getCorsHeaders());
+ 			return void res.end('OK');
+ 		}
+ 
+@@ -173,12 +176,8 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
+ 				}
+ 			}
+ 
+-			// Allow cross origin requests from the web worker extension host
+-			responseHeaders['Vary'] = 'Origin';
+-			const requestOrigin = req.headers['origin'];
+-			if (requestOrigin && this._webEndpointOriginChecker.matches(requestOrigin)) {
+-				responseHeaders['Access-Control-Allow-Origin'] = requestOrigin;
+-			}
++			// Allow cross origin requests from any origin (needed for iframe embedding)
++			Object.assign(responseHeaders, getCorsHeaders());
+ 			return serveFile(filePath, CacheControl.ETAG, this._logService, req, res, responseHeaders);
+ 		}
+ 
+@@ -188,7 +187,7 @@ class RemoteExtensionHostAgentServer extends Disposable implements IServerAPI {
+ 			return;
+ 		}
+ 
+-		res.writeHead(404, { 'Content-Type': 'text/plain' });
++		res.writeHead(404, { 'Content-Type': 'text/plain', ...getCorsHeaders() });
+ 		return void res.end('Not found');
+ 	}
+ 
+@@ -830,45 +829,3 @@ export async function createServer(address: string | net.AddressInfo | null, arg
+ 	}
+ 	return remoteExtensionHostAgentServer;
+ }
+-
+-class WebEndpointOriginChecker {
+-
+-	public static create(productService: IProductService): WebEndpointOriginChecker {
+-		const webEndpointUrlTemplate = productService.webEndpointUrlTemplate;
+-		const commit = productService.commit;
+-		const quality = productService.quality;
+-		if (!webEndpointUrlTemplate || !commit || !quality) {
+-			return new WebEndpointOriginChecker(null);
+-		}
+-
+-		const uuid = generateUuid();
+-		const exampleUrl = new URL(
+-			webEndpointUrlTemplate
+-				.replace('{{uuid}}', uuid)
+-				.replace('{{commit}}', commit)
+-				.replace('{{quality}}', quality)
+-		);
+-		const exampleOrigin = exampleUrl.origin;
+-		const originRegExpSource = (
+-			escapeRegExpCharacters(exampleOrigin)
+-				.replace(uuid, '[a-zA-Z0-9\\-]+')
+-		);
+-		try {
+-			const originRegExp = createRegExp(\`^\${originRegExpSource}\$\`, true, { matchCase: false });
+-			return new WebEndpointOriginChecker(originRegExp);
+-		} catch (err) {
+-			return new WebEndpointOriginChecker(null);
+-		}
+-	}
+-
+-	constructor(
+-		private readonly _originRegExp: RegExp | null
+-	) { }
+-
+-	public matches(origin: string): boolean {
+-		if (!this._originRegExp) {
+-			return false;
+-		}
+-		return this._originRegExp.test(origin);
+-	}
+-}
+diff --git a/src/vs/server/node/webClientServer.ts b/src/vs/server/node/webClientServer.ts
+--- a/src/vs/server/node/webClientServer.ts
++++ b/src/vs/server/node/webClientServer.ts
+@@ -37,11 +37,23 @@ const textMimeType: { [ext: string]: string | undefined } = {
+ 	'.svg': 'image/svg+xml',
+ };
+ 
++/**
++ * Returns CORS headers to allow cross-origin requests from any origin.
++ * This is needed when VSCode serve-web is embedded in an iframe.
++ */
++export function getCorsHeaders(): Record<string, string> {
++	return {
++		'Access-Control-Allow-Origin': '*',
++		'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
++		'Access-Control-Allow-Headers': '*',
++	};
++}
++
+ /**
+  * Return an error to the client.
+  */
+ export async function serveError(req: http.IncomingMessage, res: http.ServerResponse, errorCode: number, errorMessage: string): Promise<void> {
+-	res.writeHead(errorCode, { 'Content-Type': 'text/plain' });
++	res.writeHead(errorCode, { 'Content-Type': 'text/plain', ...getCorsHeaders() });
+ 	res.end(errorMessage);
+ }
+ 
+@@ -60,7 +72,7 @@ export async function serveFile(filePath: string, cacheControl: CacheControl, lo
+ 			// Check if file modified since
+ 			const etag = \`W/"\${[stat.ino, stat.size, stat.mtime.getTime()].join('-')}"\`; // weak validator
+ 			if (req.headers['if-none-match'] === etag) {
+-				res.writeHead(304);
++				res.writeHead(304, getCorsHeaders());
+ 				return void res.end();
+ 			}
+ 
+@@ -73,7 +85,7 @@ export async function serveFile(filePath: string, cacheControl: CacheControl, lo
+ 
+ 		responseHeaders['Content-Type'] = textMimeType[extname(filePath)] || getMediaMime(filePath) || 'text/plain';
+ 
+-		res.writeHead(200, responseHeaders);
++		res.writeHead(200, { ...responseHeaders, ...getCorsHeaders() });
+ 
+ 		// Data
+ 		createReadStream(filePath).pipe(res);
+@@ -229,7 +241,7 @@ export class WebClientServer {
+ 		};
+ 		setResponseHeader('Cache-Control');
+ 		setResponseHeader('Content-Type');
+-		res.writeHead(200, responseHeaders);
++		res.writeHead(200, { ...responseHeaders, ...getCorsHeaders() });
+ 		const buffer = await streamToBuffer(context.stream);
+ 		return void res.end(buffer.buffer);
+ 	}
+@@ -270,7 +282,7 @@ export class WebClientServer {
+ 			const newLocation = url.format({ pathname: basePath, query: newQuery });
+ 			responseHeaders['Location'] = newLocation;
+ 
+-			res.writeHead(302, responseHeaders);
++			res.writeHead(302, { ...responseHeaders, ...getCorsHeaders() });
+ 			return void res.end();
+ 		}
+ 
+@@ -435,7 +447,8 @@ export class WebClientServer {
+ 
+ 		const headers: http.OutgoingHttpHeaders = {
+ 			'Content-Type': 'text/html',
+-			'Content-Security-Policy': cspDirectives
++			'Content-Security-Policy': cspDirectives,
++			...getCorsHeaders()
+ 		};
+ 		if (this._connectionToken.type !== ServerConnectionTokenType.None) {
+ 			// At this point we know the client has a valid cookie
+@@ -491,7 +504,8 @@ export class WebClientServer {
+ 
+ 		res.writeHead(200, {
+ 			'Content-Type': 'text/html',
+-			'Content-Security-Policy': cspDirectives
++			'Content-Security-Policy': cspDirectives,
++			...getCorsHeaders()
+ 		});
+ 		return void res.end(data);
+ 	}
