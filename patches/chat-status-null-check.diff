@@ -1,0 +1,30 @@
+Patch: chat-status-null-check
+
+
+diff --git a/src/vs/workbench/contrib/chat/browser/chatStatus/chatStatus.ts b/src/vs/workbench/contrib/chat/browser/chatStatus/chatStatus.ts
+index ef3e598..59cd06d 100644
+--- vscode.orig/src/vs/workbench/contrib/chat/browser/chatStatus/chatStatus.ts
++++ vscode/src/vs/workbench/contrib/chat/browser/chatStatus/chatStatus.ts
+@@ -14,6 +14,9 @@ export function isNewUser(chatEntitlementService: IChatEntitlementService): bool
+ }
+ 
+ export function isCompletionsEnabled(configurationService: IConfigurationService, modeId: string = '*'): boolean {
++	if (!product.defaultChatAgent?.completionsEnablementSetting) {
++		return false;
++	}
+ 	const result = configurationService.getValue<Record<string, boolean>>(product.defaultChatAgent.completionsEnablementSetting);
+ 	if (!isObject(result)) {
+ 		return false;
+diff --git a/src/vs/workbench/contrib/chat/browser/chatStatus/chatStatusEntry.ts b/src/vs/workbench/contrib/chat/browser/chatStatus/chatStatusEntry.ts
+index fe94a56..0441c4a 100644
+--- vscode.orig/src/vs/workbench/contrib/chat/browser/chatStatus/chatStatusEntry.ts
++++ vscode/src/vs/workbench/contrib/chat/browser/chatStatus/chatStatusEntry.ts
+@@ -83,7 +83,7 @@ export class ChatStatusBarEntry extends Disposable implements IWorkbenchContribu
+ 		this._register(this.editorService.onDidActiveEditorChange(() => this.onDidActiveEditorChange()));
+ 
+ 		this._register(this.configurationService.onDidChangeConfiguration(e => {
+-			if (e.affectsConfiguration(product.defaultChatAgent.completionsEnablementSetting)) {
++			if (product.defaultChatAgent?.completionsEnablementSetting && e.affectsConfiguration(product.defaultChatAgent.completionsEnablementSetting)) {
+ 				this.update();
+ 			}
+ 		}));
