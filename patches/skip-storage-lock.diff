@@ -1,0 +1,17 @@
+Patch: skip-storage-lock
+
+
+diff --git a/src/vs/server/node/extensionHostConnection.ts b/src/vs/server/node/extensionHostConnection.ts
+index 6ae4edd..81135e9 100644
+--- vscode.orig/src/vs/server/node/extensionHostConnection.ts
++++ vscode/src/vs/server/node/extensionHostConnection.ts
+@@ -278,6 +278,9 @@ export class ExtensionHostConnection extends Disposable {
+ 			if (this._configurationService.getValue<boolean>('extensions.supportNodeGlobalNavigator')) {
+ 				args.push('--supportGlobalNavigator');
+ 			}
++			// Skip workspace storage lock for remote extension hosts to prevent activation hangs
++			// The lock mechanism can block for up to 10 minutes checking stale locks
++			args.push('--skipWorkspaceStorageLock');
+ 			this._extensionHostProcess = cp.fork(FileAccess.asFileUri('bootstrap-fork').fsPath, args, opts);
+ 			const pid = this._extensionHostProcess.pid;
+ 			this._log(`<${pid}> Launched Extension Host Process.`);
