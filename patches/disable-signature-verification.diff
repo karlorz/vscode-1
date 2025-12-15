@@ -1,0 +1,22 @@
+Disable extension signature verification by default for CLI
+
+Code-OSS builds lack Microsoft's signing infrastructure, causing
+extension installation to fail with "Signature verification was not executed".
+This patch changes the default from true to false, making signature
+verification opt-in rather than opt-out for Code-OSS builds.
+
+
+diff --git a/src/vs/platform/extensionManagement/node/extensionManagementService.ts b/src/vs/platform/extensionManagement/node/extensionManagementService.ts
+index cdf0c67..09cbbe2 100644
+--- vscode.orig/src/vs/platform/extensionManagement/node/extensionManagementService.ts
++++ vscode/src/vs/platform/extensionManagement/node/extensionManagementService.ts
+@@ -340,7 +340,8 @@ export class ExtensionManagementService extends AbstractExtensionManagementServi
+ 	private async downloadExtension(extension: IGalleryExtension, operation: InstallOperation, verifySignature: boolean, clientTargetPlatform?: TargetPlatform): Promise<{ readonly location: URI; readonly verificationStatus: ExtensionSignatureVerificationCode | undefined }> {
+ 		if (verifySignature) {
+ 			const value = this.configurationService.getValue(VerifyExtensionSignatureConfigKey);
+-			verifySignature = isBoolean(value) ? value : true;
++			// Code-OSS lacks Microsoft's signing infrastructure, so default to false
++			verifySignature = isBoolean(value) ? value : false;
+ 		}
+ 		const { location, verificationStatus } = await this.extensionsDownloader.download(extension, operation, verifySignature, clientTargetPlatform);
+ 		const shouldRequireSignature = shouldRequireRepositorySignatureFor(extension.private, await this.extensionGalleryManifestService.getExtensionGalleryManifest());

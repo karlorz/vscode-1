@@ -6,3 +6,4 @@ chat-status-null-check.diff
 github-extension-commonjs.diff
 default-chat-agent.diff
 skip-storage-lock.diff
+disable-signature-verification.diff
