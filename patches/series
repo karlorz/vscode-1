@@ -4,3 +4,5 @@ workbench-defaults.diff
 command-center-label.diff
 disable-cors.diff
 chat-status-null-check.diff
+default-chat-agent.diff
+skip-storage-lock.diff
