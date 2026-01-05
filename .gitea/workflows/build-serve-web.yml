@@ -1,0 +1,188 @@
+name: Build VSCode Serve-Web (Gitea)
+
+on:
+  push:
+    branches: [main, master, 'feat/**']
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+
+env:
+  NODE_VERSION: '22.20.0'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+          # Note: arm64 runner requires self-hosted runner with arm64 label
+          # Uncomment below and add your arm64 runner label
+          # - os: ubuntu-latest
+          #   arch: arm64
+          #   runs-on: self-hosted-arm64
+
+    runs-on: ${{ matrix.os }}
+    name: Build (linux-${{ matrix.arch }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup swap space (to handle memory-intensive builds)
+        if: runner.os == 'Linux'
+        run: |
+          # Use unique swapfile path to avoid conflicts
+          SWAPFILE="/mnt/vscode-build-swap"
+          if [ ! -f "$SWAPFILE" ]; then
+            sudo fallocate -l 8G "$SWAPFILE" || sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=8192
+            sudo chmod 600 "$SWAPFILE"
+            sudo mkswap "$SWAPFILE"
+          fi
+          sudo swapon "$SWAPFILE" || true
+          sudo swapon --show
+          free -h
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libx11-dev \
+            libxkbfile-dev \
+            libsecret-1-dev \
+            libkrb5-dev \
+            python3 \
+            rpm
+
+      - name: Apply patches
+        run: ./scripts/apply-patches.sh
+
+      - name: Install build dependencies
+        working-directory: build
+        run: npm ci
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+
+      - name: Compile and build extensions
+        run: |
+          npm run gulp compile-build-without-mangling
+          npm run gulp compile-extensions-build
+          npm run gulp compile-extension-media-build
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Bundle and minify
+        run: npm run gulp minify-vscode-reh-web
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Build server (web)
+        run: |
+          npm run gulp vscode-reh-web-linux-${{ matrix.arch }}-min-ci
+          mv ../vscode-reh-web-linux-${{ matrix.arch }} ../vscode-server-linux-${{ matrix.arch }}-web
+
+      - name: Create archive
+        run: |
+          tar --owner=0 --group=0 -czf vscode-server-linux-${{ matrix.arch }}-web.tar.gz -C .. vscode-server-linux-${{ matrix.arch }}-web
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-server-linux-${{ matrix.arch }}-web
+          path: vscode-server-linux-${{ matrix.arch }}-web.tar.gz
+          retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f -name "*.tar.gz"
+
+      - name: Get tag name
+        id: tag
+        run: echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Check if prerelease
+        id: prerelease
+        run: |
+          if [[ "${{ steps.tag.outputs.tag_name }}" == *"-"* ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Gitea Release
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          GITEA_SERVER: ${{ gitea.server_url }}
+          GITEA_REPO: ${{ gitea.repository }}
+        run: |
+          TAG_NAME="${{ steps.tag.outputs.tag_name }}"
+          IS_PRERELEASE=${{ steps.prerelease.outputs.is_prerelease }}
+
+          # Create release via Gitea API
+          RELEASE_RESPONSE=$(curl -s -X POST "${GITEA_SERVER}/api/v1/repos/${GITEA_REPO}/releases" \
+            -H "Authorization: token ${GITEA_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"tag_name\": \"${TAG_NAME}\",
+              \"name\": \"Release ${TAG_NAME}\",
+              \"body\": \"Automated release for ${TAG_NAME}\\n\\n## Downloads\\n- vscode-server-linux-x64-web.tar.gz\\n- vscode-server-linux-arm64-web.tar.gz\",
+              \"draft\": false,
+              \"prerelease\": ${IS_PRERELEASE}
+            }")
+
+          echo "Release response: $RELEASE_RESPONSE"
+          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+
+          if [ "$RELEASE_ID" == "null" ] || [ -z "$RELEASE_ID" ]; then
+            echo "Failed to create release, checking if release already exists..."
+            # Try to get existing release
+            RELEASE_ID=$(curl -s "${GITEA_SERVER}/api/v1/repos/${GITEA_REPO}/releases/tags/${TAG_NAME}" \
+              -H "Authorization: token ${GITEA_TOKEN}" | jq -r '.id')
+
+            if [ "$RELEASE_ID" == "null" ] || [ -z "$RELEASE_ID" ]; then
+              echo "Could not create or find release"
+              exit 1
+            fi
+            echo "Found existing release with ID: $RELEASE_ID"
+          else
+            echo "Created release with ID: $RELEASE_ID"
+          fi
+
+          # Upload all artifacts
+          for artifact in artifacts/**/*.tar.gz; do
+            if [ -f "$artifact" ]; then
+              filename=$(basename "$artifact")
+              echo "Uploading: $filename"
+              curl -s -X POST "${GITEA_SERVER}/api/v1/repos/${GITEA_REPO}/releases/${RELEASE_ID}/assets?name=${filename}" \
+                -H "Authorization: token ${GITEA_TOKEN}" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary "@${artifact}"
+              echo "Uploaded: $filename"
+            fi
+          done
+
+          echo "Release URL: ${GITEA_SERVER}/${GITEA_REPO}/releases/tag/${TAG_NAME}"
