@@ -1,0 +1,36 @@
+Enable proposed APIs for commonly used extensions
+
+Code-OSS builds don't enable proposed APIs by default, causing console
+errors when extensions request experimental APIs. This patch enables the
+required proposals for Python and ChatGPT extensions.
+diff --git a/product.json b/product.json
+index af0f59dc565..76995f28367 100644
+--- vscode.orig/product.json
++++ vscode/product.json
+@@ -12,6 +12,26 @@
+ 	"linkProtectionTrustedDomains": [
+ 		"https://open-vsx.org"
+ 	],
++	"extensionEnabledApiProposals": {
++		"ms-python.python": [
++			"contribEditorContentMenu",
++			"quickPickSortByLabel",
++			"testObserver"
++		],
++		"ms-python.debugpy": [
++			"portsAttributes",
++			"debugVisualization",
++			"contribViewsWelcome"
++		],
++		"ms-python.vscode-python-envs": [
++			"terminalShellEnv",
++			"terminalDataWriteEvent"
++		],
++		"openai.chatgpt": [
++			"chatSessionsProvider",
++			"languageModelProxy"
++		]
++	},
+ 	"dataFolderName": ".vscode-oss",
+ 	"win32MutexName": "vscodeoss",
+ 	"licenseName": "MIT",
