@@ -1,4 +1,5 @@
 openvsx-gallery.diff
+enable-proposed-api.diff
 disable-signature-verification.diff
 workbench-defaults.diff
 command-center-label.diff
