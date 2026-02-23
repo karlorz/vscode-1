@@ -1,0 +1,38 @@
+Disable throwing navigator migration guard in extension host
+
+NodeJS v21+ defines navigator as a global object. VS Code added a throwing
+guard to alert extension authors about this breaking change, but it causes
+noisy console errors for extensions like openai.chatgpt that legitimately
+access navigator. Instead of throwing, provide a minimal non-throwing stub
+when Node doesn't have a native navigator (older versions) or leave it
+alone when it does (v21+).
+
+diff --git a/src/vs/workbench/api/node/extensionHostProcess.ts b/src/vs/workbench/api/node/extensionHostProcess.ts
+--- vscode.orig/src/vs/workbench/api/node/extensionHostProcess.ts
++++ vscode/src/vs/workbench/api/node/extensionHostProcess.ts
+@@ -139,12 +139,18 @@ function patchProcess(allowExit: boolean) {
+
+ // NodeJS since v21 defines navigator as a global object. This will likely surprise many extensions and potentially break them
+ // because `navigator` has historically often been used to check if running in a browser (vs running inside NodeJS)
++// Instead of throwing an error when navigator is accessed, provide a minimal stub for older Node versions
++// or leave the native navigator alone for Node v21+.
+ if (!args.supportGlobalNavigator) {
+-	Object.defineProperty(globalThis, 'navigator', {
+-		get: () => {
+-			onUnexpectedExternalError(new PendingMigrationError('navigator is now a global in nodejs, please see https://aka.ms/vscode-extensions/navigator for additional info on this error.'));
+-			return undefined;
+-		}
+-	});
++	// Only define a stub if Node doesn't already provide navigator (Node < 21)
++	if (typeof globalThis.navigator === 'undefined') {
++		Object.defineProperty(globalThis, 'navigator', {
++			value: {
++				userAgent: `Node.js/${process.version}`,
++				language: 'en'
++			},
++			writable: false,
++			configurable: false
++		});
++	}
++	// For Node >= 21, leave the native navigator as-is (no throwing getter)
+ }

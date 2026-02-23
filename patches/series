@@ -7,3 +7,4 @@ disable-cors.diff
 chat-status-null-check.diff
 default-chat-agent.diff
 skip-storage-lock.diff
+disable-navigator-migration-guard.diff
