@@ -1,5 +1,6 @@
 openvsx-gallery.diff
 enable-proposed-api.diff
+disable-navigator-migration-guard.diff
 disable-signature-verification.diff
 workbench-defaults.diff
 command-center-label.diff

@@ -5,10 +5,10 @@ errors for extensions that use experimental features. Enable the required
 proposals for commonly used Python and ChatGPT extensions.
 
 diff --git a/product.json b/product.json
-index af0f59dc565..c3b76b0f997 100644
+index af0f59dc565..4eb5d2d0b8e 100644
 --- vscode.orig/product.json
 +++ vscode/product.json
-@@ -12,6 +12,26 @@
+@@ -12,6 +12,32 @@
  	"linkProtectionTrustedDomains": [
  		"https://open-vsx.org"
  	],
@@ -16,7 +16,13 @@ index af0f59dc565..c3b76b0f997 100644
 +		"ms-python.python": [
 +			"contribEditorContentMenu",
 +			"quickPickSortByLabel",
-+			"testObserver"
++			"testObserver",
++			"quickPickItemTooltip",
++			"terminalDataWriteEvent",
++			"terminalExecuteCommandEvent",
++			"codeActionAI",
++			"notebookReplDocument",
++			"notebookVariableProvider"
 +		],
 +		"ms-python.debugpy": [
 +			"portsAttributes",

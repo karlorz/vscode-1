@@ -1,0 +1,47 @@
+Disable throwing navigator migration guard in extension host
+
+Avoid surfacing PendingMigrationError in extension-host logs when extensions
+touch `globalThis.navigator`. Keep Node's native navigator as-is when present,
+and provide a minimal non-throwing fallback on older Node runtimes.
+
+diff --git a/src/vs/workbench/api/node/extensionHostProcess.ts b/src/vs/workbench/api/node/extensionHostProcess.ts
+index 0eff6f61f09..589df8f06cc 100644
+--- vscode.orig/src/vs/workbench/api/node/extensionHostProcess.ts
++++ vscode/src/vs/workbench/api/node/extensionHostProcess.ts
+@@ -8,7 +8,7 @@ import * as nativeWatchdog from 'native-watchdog';
+ import * as net from 'net';
+ import { ProcessTimeRunOnceScheduler } from '../../../base/common/async.js';
+ import { VSBuffer } from '../../../base/common/buffer.js';
+-import { PendingMigrationError, isCancellationError, isSigPipeError, onUnexpectedError, onUnexpectedExternalError } from '../../../base/common/errors.js';
++import { isCancellationError, isSigPipeError, onUnexpectedError } from '../../../base/common/errors.js';
+ import { Event } from '../../../base/common/event.js';
+ import * as performance from '../../../base/common/performance.js';
+ import { IURITransformer } from '../../../base/common/uriIpc.js';
+@@ -137,15 +137,21 @@ function patchProcess(allowExit: boolean) {
+ 
+ }
+ 
+-// NodeJS since v21 defines navigator as a global object. This will likely surprise many extensions and potentially break them
+-// because `navigator` has historically often been used to check if running in a browser (vs running inside NodeJS)
+-if (!args.supportGlobalNavigator) {
++// NodeJS since v21 defines navigator as a global object. Keep native implementations untouched.
++// For older Node versions, provide a minimal non-throwing stub for extensions probing navigator.
++if (typeof globalThis.navigator === 'undefined') {
++	const rawLanguage = process.env.LC_ALL ?? process.env.LC_MESSAGES ?? process.env.LANG;
++	const navigatorValue: { userAgent: string; language?: string } = { userAgent: `Node.js ${process.version}` };
++	if (rawLanguage) {
++		navigatorValue.language = rawLanguage.split('.')[0].replace('_', '-');
++	}
++
+ 	Object.defineProperty(globalThis, 'navigator', {
+-		get: () => {
+-			onUnexpectedExternalError(new PendingMigrationError('navigator is now a global in nodejs, please see https://aka.ms/vscode-extensions/navigator for additional info on this error.'));
+-			return undefined;
+-		}
++		value: navigatorValue,
++		configurable: true,
++		enumerable: false,
++		writable: false
+ 	});
+ }
+ 
